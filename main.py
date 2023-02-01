@@ -20,37 +20,40 @@ class Runtime():
 def main(args):
 
     cloud1 = open3d.io.read_point_cloud(args[1])
-    cloud2 = open3d.io.read_point_cloud(args[2])
+    cloud1.colors = open3d.utility.Vector3dVector(np.array([255, 0, 0], dtype=int) * np.ones((len(cloud1.points), 3), dtype=int))
 
-    # open3d.visualization.draw_geometries([cloud1])
+    cloud2 = open3d.io.read_point_cloud(args[2])
+    cloud2.colors = open3d.utility.Vector3dVector(np.array([0, 0, 255], dtype=int) * np.ones((len(cloud2.points), 3), dtype=int))
 
     with Runtime('ICP') as _:
         icp(cloud_src=cloud2, cloud_dst=cloud1)
 
 
-def icp(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, max_iter:int=1000):
-    
+def icp(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, max_iter:int=50, epsilon:float=0.01, visualize:bool=True):
+
+    if visualize:
+        open3d.visualization.draw_geometries([cloud_dst + cloud_src])
+
     tree_dst = open3d.geometry.KDTreeFlann(cloud_dst)
 
-    prev_error = 0
+    prev_error = float("inf")
     for i in range(max_iter):
-
-        mean_src, _ = open3d.geometry.compute_point_cloud_mean_and_covariance(cloud_src)
-        mean_dst, _ = open3d.geometry.compute_point_cloud_mean_and_covariance(cloud_dst)
 
         points_src, points_dst = associate(cloud_src=cloud_src, cloud_dst=cloud_dst, tree_dst=tree_dst)
 
-        points_src_shifted = points_src - mean_src
-        points_dst_shifted = points_dst - mean_dst
+        error = np.sum([np.linalg.norm(points_dst[i] - points_src[i]) for i in range(len(points_src))])
+        print(f'Iteration: {i+1}\t-\tError: {error}')
 
-        T = get_transformation(mean_src, mean_dst, points_src_shifted, points_dst_shifted)
+        if prev_error - error < epsilon:
+            break
 
-        # error = 
-        print()
-        # if error >= prev_error:
-        #     break
+        T = get_transformation(cloud_src, cloud_dst, points_src, points_dst)
+        cloud_src.transform(T)
 
-        # prev_error = error
+        prev_error = error
+    
+    if visualize:
+        open3d.visualization.draw_geometries([cloud_dst + cloud_src])
 
 def tr_icp(cloud_src, cloud_dst):
     pass
@@ -67,13 +70,19 @@ def associate(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open
 
     return array_src, array_dst_ordered
 
-def get_transformation(mean_src:NDArray, mean_dst:NDArray, points_src_shifted:NDArray, points_dst_shifted:NDArray) -> NDArray[float]:
+def get_transformation(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, points_src:NDArray, points_dst:NDArray) -> NDArray[float]:
 
-    H = np.dot(points_dst_shifted, points_src_shifted.T)
-    U, S, VT = open3d.core.svd(H)
+    mean_src, _ = open3d.geometry.compute_point_cloud_mean_and_covariance(cloud_src)
+    mean_dst, _ = open3d.geometry.compute_point_cloud_mean_and_covariance(cloud_dst)
+
+    points_src_shifted = points_src - mean_src
+    points_dst_shifted = points_dst - mean_dst
+
+    H = np.dot(points_src_shifted.T, points_dst_shifted)
+    U, _, VT = np.linalg.svd(H)
     
     T = np.eye(N=4, dtype=float)
-    R = np.dot(VT.t, U.t)
+    R = np.dot(VT.T, U.T)
     T[:3,:3] = R
     T[:3,3] = mean_dst - np.dot(R, mean_src)
 
