@@ -1,3 +1,4 @@
+from fileinput import filename
 import sys
 import time
 import numpy as np
@@ -26,10 +27,12 @@ def main(args):
     cloud2.colors = open3d.utility.Vector3dVector(np.array([0, 0, 255], dtype=int) * np.ones((len(cloud2.points), 3), dtype=int))
 
     with Runtime('ICP') as _:
-        icp(cloud_src=cloud2, cloud_dst=cloud1)
+        icp(cloud_src=cloud2, cloud_dst=cloud1, visualize=True)
 
+    with Runtime('TR-ICP') as _:
+        tr_icp(cloud_src=cloud2, cloud_dst=cloud1, visualize=True)
 
-def icp(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, max_iter:int=50, epsilon:float=0.01, visualize:bool=True):
+def icp(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, max_iter:int=50, epsilon:float=0.00001, visualize:bool=False):
 
     if visualize:
         open3d.visualization.draw_geometries([cloud_dst + cloud_src])
@@ -39,36 +42,64 @@ def icp(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geo
     prev_error = float("inf")
     for i in range(max_iter):
 
-        points_src, points_dst = associate(cloud_src=cloud_src, cloud_dst=cloud_dst, tree_dst=tree_dst)
+        points_src, points_dst, distances = associate(cloud_src=cloud_src, cloud_dst=cloud_dst, tree_dst=tree_dst)
 
-        error = np.sum([np.linalg.norm(points_dst[i] - points_src[i]) for i in range(len(points_src))])
+        T = get_transformation(cloud_src, cloud_dst, points_src, points_dst)
+        cloud_src.transform(T)
+
+        error = np.mean(distances)
         print(f'Iteration: {i+1}\t-\tError: {error}')
 
         if prev_error - error < epsilon:
             break
-
-        T = get_transformation(cloud_src, cloud_dst, points_src, points_dst)
-        cloud_src.transform(T)
 
         prev_error = error
     
     if visualize:
         open3d.visualization.draw_geometries([cloud_dst + cloud_src])
 
-def tr_icp(cloud_src, cloud_dst):
-    pass
+def tr_icp(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, max_iter:int=50, epsilon:float=0.00001, percentage:float=0.5, visualize:bool=False):
+
+    if visualize:
+        open3d.visualization.draw_geometries([cloud_dst + cloud_src])
+
+    tree_dst = open3d.geometry.KDTreeFlann(cloud_dst)
+
+    prev_error = float("inf")
+    for i in range(max_iter):
+
+        points_src, points_dst, distances = associate(cloud_src=cloud_src, cloud_dst=cloud_dst, tree_dst=tree_dst)
+        s = distances.argsort(axis=0)
+        points_src = points_src[s][:, 0 ,:3]
+        points_dst = points_dst[s][:, 0 ,:3]
+
+        T = get_transformation(cloud_src, cloud_dst, points_src[:int(points_src.shape[0]*percentage),:], points_dst[:int(points_dst.shape[0]*percentage),:])
+        cloud_src.transform(T)
+
+        error = np.mean(distances)
+        print(f'Iteration: {i+1}\t-\tError: {error}')
+
+        if prev_error - error < epsilon:
+            break
+
+        prev_error = error
+    
+    if visualize:
+        open3d.visualization.draw_geometries([cloud_dst + cloud_src])
 
 def associate(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, tree_dst) -> List[NDArray]:
 
     array_src = np.asarray(cloud_src.points)
+    distances = np.zeros(shape=(array_src.shape[0], 1), dtype=float)
     array_dst = np.asarray(cloud_dst.points)
     array_dst_ordered = np.zeros(shape=array_src.shape, dtype=float)
 
     for i in range(array_src.shape[0]):
         _, idx, _ = tree_dst.search_knn_vector_3d(cloud_src.points[i], 1)
         array_dst_ordered[i,:] = array_dst[idx, :]
+        distances[i] = np.linalg.norm(array_src[i,:] - array_dst_ordered[i,:])
 
-    return array_src, array_dst_ordered
+    return array_src, array_dst_ordered, distances
 
 def get_transformation(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud_dst:open3d.geometry.Geometry.Type.PointCloud, points_src:NDArray, points_dst:NDArray) -> NDArray[float]:
 
@@ -88,13 +119,6 @@ def get_transformation(cloud_src:open3d.geometry.Geometry.Type.PointCloud, cloud
 
     return T
 
-def to_homogeneous(cloud:NDArray) -> NDArray:
-    
-    dim = cloud.shape[1]
-    ret_val = np.ones(shape=(cloud.shape[0], dim+1), dtype=float)
-    ret_val[:,:-1] = cloud
-
-    return ret_val
 
 if __name__ == "__main__":
     
